@@ -1,0 +1,124 @@
+//Reading RDDs
+
+val rawIpData=sc.textFile("/home/osboxes/Desktop/spark-demo/ipData.csv",5) //More and more Partitions may not be always desireable if operation involves shuffling
+
+val rawLookup=sc.textFile("/home/osboxes/Desktop/spark-demo/countryLookup.csv",2)
+
+//Data Mapping
+
+case class Lookup(id:String,country:String)
+
+case class IP(ip1:String,ip2:String,session1:Long,session2:Long,countryId:String)
+
+val mappedIpData=rawIpData.map(x=>x.split(",",-1)).map(x=> IP(x(0),x(1),x(2).toLong,x(3).toLong,x(4)))
+
+val mappedLookup=rawLookup.map(x=>x.split(",",-1)).map(x=> Lookup(x(0),x(1)))
+
+//Data Cleansing
+
+val ipData=mappedIpData.filter(x => x.ip1.split("\\.").size == 4 && x.ip2.split("\\.").size == 4)
+
+val lookup=mappedLookup.filter(x => x.id.size == 2 || !x.country.equals(""))
+
+// Caching/Persisting
+ipData.toDebugString
+ipData.cache
+ipData.toDebugString
+ipData.count
+ipData.toDebugString
+
+val t=ipData.map(x=>x.ip1)
+t.toDebugString
+
+import org.apache.spark.storage.StorageLevel._
+
+lookup.toDebugString
+lookup.persist(DISK_ONLY)
+lookup.toDebugString
+lookup.count
+lookup.toDebugString
+
+
+//Pair RDDs i.e RDD[Any,Any]
+
+val pairIp=ipData.map(x=> (x.countryId,x))
+val pairLookup=lookup.map(x=>(x.id,x))
+
+pairIp.toDebugString
+pairLookup.toDebugString
+
+//Joining
+
+val res=pairIp.join(pairLookup)
+res.toDebugString
+res.count
+
+//Group By Key 	// Data is shuffled first and then grouping occurs 
+
+val grp=ipData.map(x=> (x.countryId,x.ip1)).groupByKey 
+grp.toDebugString
+grp.count
+grp.take(1)
+grp.cache //data skew
+grp.count
+
+ipData.map(x=>x.countryId).distinct.count //same as above count
+
+// Reduce By Key	// Data is reduced/grouped in every partitioned and then the reduced keys are shuffled
+
+val red=ipData.map(x=> (x.countryId,1)).reduceByKey((x,y)=>x+y) 
+red.toDebugString
+red.count
+red.take(5)
+
+val red1=ipData.map(x=> (x.countryId,List(x.ip1))).reduceByKey((x,y)=>x++y) 
+red1.count
+red1.take(1)
+
+val x = sc.parallelize(List("spark rdd example",  "sample example"), 2)
+val y = x.map(x => x.split(" "))
+y.collect
+
+val y = x.flatMap(x => x.split(" "))
+y.collect
+	//example 2
+val input=ipData.map(x=> (x.session1,List(x.countryId))).reduceByKey((x,y)=>x++y).filter(x=>x._2.size > 1)
+input.take(1)
+input.count
+
+val op=input.flatMap(x=> x._2.map(y=>(x._1,y)))
+op.take(10)
+op.count
+
+// reduce
+ipData.map(_.session1).reduce((x,y) =>if(x>y) y else x )
+
+def getMin(x:Long,y:Long)={ if(x>y) y else x}
+ipData.map(_.session1).reduce(getMin)
+
+//union, intersection
+
+val rdd1=sc.parallelize(List(1,2,3))
+val rdd2=sc.parallelize(List(3,4,5))
+val union=rdd1.union(rdd2)
+val intersection=rdd1.intersection(rdd2)
+
+union.collect
+intersection.collect
+
+// aggregateByKey  similar to reduceByKey but it is used when the output type is different from the input type
+
+def getMin(x:Long,y:Long)={ if(x>y) y else x}
+
+val initialSet=List[Long]()
+val mergeValue=(x:List[Long],y:Long)=>x++List(y)
+val mergePartition=(a:List[Long],b:List[Long])=>List(getMin(a.reduce((x,y)=>(x+y)/2),b.reduce((x,y)=>(x+y)/2)))
+
+val input=ipData.map(x=> (x.countryId,x.session1)).aggregateByKey(initialSet)(mergeValue,mergePartition)
+
+//OR
+
+val mergeValue=(x:Long,y:Long)=>(x+y)/2
+val mergePartition=(a:Long,b:Long)=>getMin(a,b)
+
+val input=ipData.map(x=> (x.countryId,x.session1)).aggregateByKey(0.toLong)(mergeValue,mergePartition)
